@@ -11,7 +11,7 @@ let depositHistory = [];
 let withdrawRequests = [];
 
 // Real SMS Received Buffer (Populated by SMS Forwarder App)
-let verifiedSMSList = []; // Stores { trxId, amount, method, sender }
+let verifiedSMSList = []; 
 
 let config = {
     rotationMinutes: 1,
@@ -66,7 +66,6 @@ let config = {
 
 const ADMIN_PASSWORD = "adminsecretpass";
 
-// Helper: Get Active Number with Auto-Rotation
 function getActiveNumber(methodKey) {
     const method = config.methods[methodKey];
     if (!method || !method.enabled || !method.numbers || method.numbers.length === 0) return null;
@@ -94,47 +93,28 @@ function getActiveNumber(methodKey) {
     return active.num;
 }
 
-// Helper: Extract TrxID & Amount from Raw SMS Text
 function parsePaymentSMS(smsText) {
     let trxId = null;
     let amount = null;
-
-    // TrxID Matching (bKash/Nagad standard formats like 765GQY7O or B7X8Y9Z)
     const trxMatch = smsText.match(/(?:TrxID|TxnID|Trx ID|Txn ID|ID)[:\s]*([A-Za-z0-9]+)/i);
-    if (trxMatch) {
-        trxId = trxMatch[1].trim();
-    }
+    if (trxMatch) trxId = trxMatch[1].trim();
 
-    // Amount Matching (e.g. Tk 500.00 or 500 BDT)
     const amtMatch = smsText.match(/(?:Tk|BDT|amount)[:\s]*([\d\.]+)/i);
-    if (amtMatch) {
-        amount = parseFloat(amtMatch[1]);
-    }
+    if (amtMatch) amount = parseFloat(amtMatch[1]);
 
     return { trxId, amount };
 }
 
-// ==========================================
-// 📲 1. SMS Forwarder Webhook Endpoint
-// ==========================================
-// Apnar Android SMS Forwarder App ei URL-e POST request pathabe
+// SMS Forwarder Webhook
 app.post('/api/receive-sms', (req, res) => {
     const { smsText, sender, secret } = req.body;
-
-    // Optional Security Secret Check
     if (secret && secret !== "my_sms_secret_123") {
         return res.status(403).json({ success: false, message: "Unauthorized SMS forwarder" });
     }
+    if (!smsText) return res.status(400).json({ success: false, message: "No SMS content provided" });
 
-    if (!smsText) {
-        return res.status(400).json({ success: false, message: "No SMS content provided" });
-    }
-
-    // Auto Parse SMS
     const parsed = parsePaymentSMS(smsText);
-
     if (parsed.trxId) {
-        // Save to verified SMS list if not already present
         const exists = verifiedSMSList.some(item => item.trxId === parsed.trxId);
         if (!exists) {
             verifiedSMSList.push({
@@ -144,39 +124,26 @@ app.post('/api/receive-sms', (req, res) => {
                 used: false,
                 receivedAt: Date.now()
             });
-            console.log(`[SMS Received] TrxID: ${parsed.trxId}, Amount: ${parsed.amount}`);
         }
-        return res.json({ success: true, message: "SMS parsed and stored successfully", parsed });
+        return res.json({ success: true, message: "SMS stored", parsed });
     }
-
-    res.status(400).json({ success: false, message: "Could not extract TrxID from SMS" });
+    res.status(400).json({ success: false, message: "Could not extract TrxID" });
 });
 
-
-// ==========================================
-// 💳 2. User Deposit Request (Strict Verification)
-// ==========================================
+// Strict Deposit Verification
 app.post('/api/deposit', (req, res) => {
     const { phone, trxId, amount, methodKey } = req.body;
-
-    if (!users[phone]) {
-        return res.status(400).json({ success: false, message: "User pawa jayni! Prothome login/register korun." });
-    }
-
-    if (!trxId || !amount) {
-        return res.status(400).json({ success: false, message: "Sothik TrxID ebong পরিমাণ din." });
-    }
+    if (!users[phone]) return res.status(400).json({ success: false, message: "User pawa jayni!" });
+    if (!trxId || !amount) return res.status(400).json({ success: false, message: "TrxID o poriman din." });
 
     const cleanTrx = trxId.trim();
     const reqAmount = parseFloat(amount);
 
-    // Check if this TrxID exists in SMS Forwarder logs
     const smsIndex = verifiedSMSList.findIndex(item => 
         item.trxId.toLowerCase() === cleanTrx.toLowerCase() && !item.used
     );
 
     if (smsIndex === -1) {
-        // ❌ Strict Rejection: SMS Not Received yet or Invalid TrxID
         depositHistory.unshift({
             phone,
             trxId: cleanTrx,
@@ -185,24 +152,13 @@ app.post('/api/deposit', (req, res) => {
             status: "Failed (Invalid TrxID)",
             date: new Date().toLocaleTimeString()
         });
-
         return res.status(400).json({ 
             success: false, 
-            message: "ভুল TrxID! আপনার পেমেন্টের SMS আমাদের সার্ভারে পাওয়া যায়নি। সঠিক TrxID দিন।" 
+            message: "Bhul TrxID! Apnar payment-er SMS server-e pawa jayni." 
         });
     }
 
     const matchedSMS = verifiedSMSList[smsIndex];
-
-    // Optional: Check if amount matches
-    if (matchedSMS.amount && matchedSMS.amount !== reqAmount) {
-        return res.status(400).json({ 
-            success: false, 
-            message: `পরিমাণ মিলছে না! SMS অনুযায়ী প্রাপ্ত পরিমাণ: ${matchedSMS.amount} BDT` 
-        });
-    }
-
-    // ✅ Match Success! Mark SMS as used and add balance
     verifiedSMSList[smsIndex].used = true;
     users[phone].balance += reqAmount;
 
@@ -222,16 +178,9 @@ app.post('/api/deposit', (req, res) => {
         date: new Date().toLocaleTimeString()
     });
 
-    res.json({ 
-        success: true, 
-        message: "ডিপোজিট সফল হয়েছে! আপনার ব্যালেন্স যুক্ত করা হয়েছে।" 
-    });
+    res.json({ success: true, message: "Deposit safol hoyeche!" });
 });
 
-
-// ==========================================
-// 👤 Standard App Routes
-// ==========================================
 app.post('/api/register', (req, res) => {
     const { phone, pass } = req.body;
     if (!users[phone]) {
@@ -246,9 +195,7 @@ app.post('/api/register', (req, res) => {
 
 app.get('/api/balance', (req, res) => {
     const { phone } = req.query;
-    if (users[phone]) {
-        return res.json({ balance: users[phone].balance });
-    }
+    if (users[phone]) return res.json({ balance: users[phone].balance });
     res.json({ balance: 0 });
 });
 
@@ -268,30 +215,20 @@ app.get('/api/active-methods', (req, res) => {
 
 app.get('/api/deposit-history', (req, res) => {
     const { phone } = req.query;
-    const history = depositHistory.filter(item => item.phone === phone);
-    res.json(history);
+    res.json(depositHistory.filter(item => item.phone === phone));
 });
 
-// Multi-Wallet Binding
 app.post('/api/bind-wallet', (req, res) => {
     const { phone, category, accountNumber, pin } = req.body;
     if (!users[phone]) return res.status(400).json({ success: false, message: "User pawa jayni" });
-
     if (!users[phone].wallets) users[phone].wallets = {};
-
-    users[phone].wallets[category] = {
-        number: accountNumber,
-        pin: pin
-    };
-
-    res.json({ success: true, message: `${category} wallet bind o pin save hoyeche!` });
+    users[phone].wallets[category] = { number: accountNumber, pin };
+    res.json({ success: true, message: `${category} wallet bind kora hoyeche!` });
 });
 
 app.get('/api/get-wallets', (req, res) => {
     const { phone } = req.query;
-    if (users[phone] && users[phone].wallets) {
-        return res.json(users[phone].wallets);
-    }
+    if (users[phone] && users[phone].wallets) return res.json(users[phone].wallets);
     res.json({});
 });
 
@@ -300,16 +237,14 @@ app.post('/api/withdraw', (req, res) => {
     if (!users[phone]) return res.status(400).json({ success: false, message: "User pawa jayni" });
 
     const userWallet = users[phone].wallets ? users[phone].wallets[category] : null;
-    if (!userWallet) return res.status(400).json({ success: false, message: `Apnar ${category} wallet bind kora nei!` });
-
+    if (!userWallet) return res.status(400).json({ success: false, message: `Apnar ${category} wallet bind nei!` });
     if (userWallet.pin !== pin) return res.status(400).json({ success: false, message: "Bhul secret pin!" });
 
     const reqAmt = parseFloat(amount);
     if (users[phone].balance < reqAmt) return res.status(400).json({ success: false, message: "Poryapto balance nei!" });
 
     users[phone].balance -= reqAmt;
-
-    const reqObj = {
+    withdrawRequests.unshift({
         id: "WD_" + Date.now(),
         phone,
         accountType: category,
@@ -317,19 +252,15 @@ app.post('/api/withdraw', (req, res) => {
         amount: reqAmt,
         status: "Pending",
         date: new Date().toLocaleTimeString()
-    };
-
-    withdrawRequests.unshift(reqObj);
+    });
     res.json({ success: true, message: "Withdraw request pathano hoyeche!" });
 });
 
 app.get('/api/user-withdraws', (req, res) => {
     const { phone } = req.query;
-    const list = withdrawRequests.filter(r => r.phone === phone);
-    res.json(list);
+    res.json(withdrawRequests.filter(r => r.phone === phone));
 });
 
-// Admin Panel APIs
 app.post('/api/admin/login', (req, res) => {
     const { password } = req.body;
     if (password === ADMIN_PASSWORD) {
@@ -356,8 +287,7 @@ app.post('/api/admin/update-config', (req, res) => {
 
     if (methods) config.methods = methods;
     if (rotationMinutes) config.rotationMinutes = parseFloat(rotationMinutes);
-
-    res.json({ success: true, message: "Configuration save kora hoyeche!" });
+    res.json({ success: true, message: "Configuration update kora hoyeche!" });
 });
 
 const PORT = process.env.PORT || 5000;
