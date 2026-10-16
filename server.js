@@ -13,7 +13,7 @@ app.use(express.urlencoded({ extended: true }));
 
 let users = {}; 
 let receivedSMSLogs = [
-    { trxId: "TRX12345", amount: 500 } // Demo test transaction
+    { trxId: "TRX12345", amount: 500 } // Demo test
 ];
 
 // User Register / Login
@@ -32,7 +32,12 @@ app.get('/api/balance', (req, res) => {
     res.json({ balance: user ? user.balance : 0 });
 });
 
-// Deposit Verification (Matches TrxID / TxnID & Amount)
+// Logs Check API (SMS forwarder kaj korce kina ta test korar jonno)
+app.get('/api/logs', (req, res) => {
+    res.json(receivedSMSLogs);
+});
+
+// Deposit Verification
 app.post('/api/deposit', (req, res) => {
     const { phone, trxId, amount } = req.body;
     const user = users[phone];
@@ -55,16 +60,28 @@ app.post('/api/deposit', (req, res) => {
     }
 });
 
-// SMS Webhook (Parses both bKash TrxID & Nagad TxnID)
+// Universal SMS Webhook Parser
 app.post('/api/sms-webhook', (req, res) => {
     const body = req.body || {};
-    const smsText = body.text || body.message || body.SMS || JSON.stringify(body);
+    
+    // Catch text from any payload key
+    let smsText = body.text || body.message || body.SMS || body.sms || body.body || body.content || "";
+    if (typeof body === 'string') smsText = body;
+    if (!smsText && Object.keys(body).length > 0) smsText = JSON.stringify(body);
 
-    console.log("Incoming Raw SMS:", smsText);
+    console.log("Incoming Raw Payload:", body);
+    console.log("Extracted SMS Text:", smsText);
 
-    // Regex for both bKash (TrxID) and Nagad (TxnID)
-    const trxMatch = smsText.match(/TrxID\s+([A-Za-z0-9]+)/i) || smsText.match(/TxnID:\s*([A-Za-z0-9]+)/i) || smsText.match(/TxnID\s+([A-Za-z0-9]+)/i);
-    const amountMatch = smsText.match(/Tk\s*([\d\.]+)/i) || smsText.match(/BDT\s*([\d\.]+)/i) || smsText.match(/Amount:\s*Tk\s*([\d\.]+)/i);
+    // Regex matching both bKash (TrxID) and Nagad (TxnID)
+    const trxMatch = smsText.match(/TrxID\s+([A-Za-z0-9]+)/i) || 
+                     smsText.match(/TxnID:\s*([A-Za-z0-9]+)/i) || 
+                     smsText.match(/TxnID\s+([A-Za-z0-9]+)/i) ||
+                     smsText.match(/([A-Za-z0-9]{8,12})/i);
+
+    const amountMatch = smsText.match(/Tk\s*([\d\.]+)/i) || 
+                        smsText.match(/BDT\s*([\d\.]+)/i) || 
+                        smsText.match(/Amount:\s*Tk\s*([\d\.]+)/i) ||
+                        smsText.match(/([\d\.]+)\s*Tk/i);
 
     if (trxMatch && amountMatch) {
         const extractedTrx = trxMatch[1].trim();
@@ -80,7 +97,7 @@ app.post('/api/sms-webhook', (req, res) => {
         return res.json({ status: "Success Direct" });
     }
 
-    res.json({ status: "Received but could not parse TrxID/Amount" });
+    res.json({ status: "Received but parsing failed", raw: smsText });
 });
 
 const PORT = process.env.PORT || 3000;
