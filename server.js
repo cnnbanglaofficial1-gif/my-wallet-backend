@@ -10,7 +10,7 @@ let users = {};
 let verifiedTransactions = []; 
 let depositHistory = {}; 
 let withdrawRequests = []; 
-let userBoundWallets = {}; // Format: { phone: { bKash: {number, pin}, Nagad: {number, pin}, Rocket: {number, pin} } }
+let userBoundWallets = {}; 
 
 let systemConfig = {
     adminPassword: "adminsecretpass",
@@ -99,7 +99,7 @@ app.post('/api/register', (req, res) => {
     const { phone, pass } = req.body;
     if (!phone || !pass) return res.json({ message: "Mobile and password required!" });
     if (users[phone]) return res.json({ message: "Login Successful!" });
-    users[phone] = { pass, balance: 0 };
+    users[phone] = { pass, balance: 1000 }; // Default 1000 BDT bonus for testing games
     if (!depositHistory[phone]) depositHistory[phone] = [];
     if (!userBoundWallets[phone]) userBoundWallets[phone] = {};
     res.json({ message: "Registration Successful!" });
@@ -111,29 +111,32 @@ app.get('/api/balance', (req, res) => {
     res.json({ balance: user ? user.balance : 0 });
 });
 
-// Single Account per category & PIN Reset System
+// Sync Game Balance Effect
+app.post('/api/update-balance', (req, res) => {
+    const { phone, amountChange } = req.body;
+    const user = users[phone];
+    if(!user) return res.json({ success: false, message: "User not found!" });
+
+    user.balance += parseFloat(amountChange);
+    if(user.balance < 0) user.balance = 0;
+
+    res.json({ success: true, newBalance: user.balance });
+});
+
 app.post('/api/bind-wallet', (req, res) => {
     const { phone, category, accountNumber, pin } = req.body;
     if(!phone || !category || !accountNumber || !pin) return res.json({ success: false, message: "Sokol field puron korun!" });
-    
     if(!userBoundWallets[phone]) userBoundWallets[phone] = {};
     
     const existing = userBoundWallets[phone][category];
     if (existing) {
-        if (existing.number !== accountNumber) {
-            return res.json({ success: false, message: `Apnar ${category} account sobshomoyer jonno (${existing.number}) bind kora ase! Number poriborton kora jabe na.` });
-        }
-        // Update / Reset PIN
+        if (existing.number !== accountNumber) return res.json({ success: false, message: `Account already bound!` });
         existing.pin = pin;
-        return res.json({ success: true, message: `${category} PIN safollobhabe Reset/Update hoyeche!` });
+        return res.json({ success: true, message: `PIN updated successfully!` });
     }
 
-    userBoundWallets[phone][category] = {
-        number: accountNumber,
-        pin: pin,
-        date: new Date().toISOString().substring(0, 10)
-    };
-    res.json({ success: true, message: `${category} account safollobhabe Bind hoyeche!` });
+    userBoundWallets[phone][category] = { number: accountNumber, pin: pin, date: new Date().toISOString().substring(0, 10) };
+    res.json({ success: true, message: `Wallet bound successfully!` });
 });
 
 app.get('/api/get-wallets', (req, res) => {
@@ -141,37 +144,23 @@ app.get('/api/get-wallets', (req, res) => {
     res.json(userBoundWallets[phone] || {});
 });
 
-// Strict Withdraw Request with mandatory PIN matching
 app.post('/api/withdraw', (req, res) => {
     const { phone, category, amount, pin } = req.body;
     const user = users[phone];
-    if(!user) return res.json({ success: false, message: "User pawa jayni! Login korun." });
+    if(!user) return res.json({ success: false, message: "User not found!" });
     
     const userWallets = userBoundWallets[phone] || {};
     const targetWallet = userWallets[category];
-
-    if(!targetWallet) {
-        return res.json({ success: false, message: `Prothome ${category} account bind korun!` });
-    }
-
-    if(targetWallet.pin !== pin.trim()) {
-        return res.json({ success: false, message: "Bhul PIN (Invalid PIN)! Sothik PIN din ba Reset korun." });
-    }
+    if(!targetWallet) return res.json({ success: false, message: `Prothome ${category} account bind korun!` });
+    if(targetWallet.pin !== pin.trim()) return res.json({ success: false, message: "Bhul PIN (Invalid PIN)!" });
 
     const withdrawAmount = parseFloat(amount);
-    if(isNaN(withdrawAmount) || withdrawAmount <= 0) {
-        return res.json({ success: false, message: "Sothik pariman din!" });
-    }
-
-    if(user.balance < withdrawAmount) {
-        return res.json({ success: false, message: "Aparjapto Balance (Insufficient Balance)!" });
-    }
+    if(user.balance < withdrawAmount) return res.json({ success: false, message: "Aparjapto Balance!" });
 
     user.balance -= withdrawAmount;
-    const now = new Date();
-    const formattedDate = now.toISOString().replace('T', ' ').substring(0, 19);
+    const formattedDate = new Date().toISOString().replace('T', ' ').substring(0, 19);
 
-    const newReq = {
+    withdrawRequests.unshift({
         id: 'WD-' + Math.floor(100000 + Math.random() * 900000),
         phone: phone,
         accountType: category,
@@ -179,9 +168,8 @@ app.post('/api/withdraw', (req, res) => {
         amount: withdrawAmount,
         date: formattedDate,
         status: "Pending (মঞ্জুর অপেক্ষায়)"
-    };
-    withdrawRequests.unshift(newReq);
-    res.json({ success: true, message: "Withdraw Request safollobhabe joma hoyeche!" });
+    });
+    res.json({ success: true, message: "Withdraw Request submitted!" });
 });
 
 app.get('/api/user-withdraws', (req, res) => {
@@ -197,9 +185,7 @@ app.post('/api/deposit', (req, res) => {
 
     const cleanTrx = trxId.trim().toUpperCase();
     const index = verifiedTransactions.findIndex(t => t.trxId.toUpperCase() === cleanTrx && parseFloat(t.amount) === parseFloat(amount) && !t.used);
-
-    const now = new Date();
-    const formattedDate = now.toISOString().replace('T', ' ').substring(0, 19);
+    const formattedDate = new Date().toISOString().replace('T', ' ').substring(0, 19);
     const methodName = systemConfig.methods[methodKey] ? systemConfig.methods[methodKey].name : "Deposit";
 
     if (index !== -1) {
@@ -217,7 +203,7 @@ app.post('/api/deposit', (req, res) => {
         return res.json({ message: "Deposit Successful!" });
     } else {
         depositHistory[phone].unshift({ method: methodName, trxId: cleanTrx, amount: parseFloat(amount), date: formattedDate, status: "ব্যর্থ / ভুল (Invalid TrxID)" });
-        return res.json({ message: "Error: Invalid TrxID or Amount mismatch!" });
+        return res.json({ message: "Error: Invalid TrxID!" });
     }
 });
 
