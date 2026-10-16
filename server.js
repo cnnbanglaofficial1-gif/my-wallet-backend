@@ -9,13 +9,14 @@ app.use(cors({
 }));
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 let users = {}; 
 let receivedSMSLogs = [
-    { trxId: "TRX12345", amount: 500 } // টেস্ট করার জন্য ডেমো ট্রানজেকশন
+    { trxId: "TRX12345", amount: 500 } // Demo test transaction
 ];
 
-// ইউজার রেজিস্ট্রেশন
+// User Register / Login
 app.post('/api/register', (req, res) => {
     const { phone, pass } = req.body;
     if (!phone || !pass) return res.json({ message: "Mobile and password required!" });
@@ -24,29 +25,29 @@ app.post('/api/register', (req, res) => {
     res.json({ message: "Registration Successful!" });
 });
 
-// ব্যালেন্স চেক
+// Balance Check
 app.get('/api/balance', (req, res) => {
     const { phone } = req.query;
     const user = users[phone];
     res.json({ balance: user ? user.balance : 0 });
 });
 
-// ডিপোজিট ভ্যালিডেশন (TrxID & Amount Match)
+// Deposit Verification (Matches TrxID / TxnID & Amount)
 app.post('/api/deposit', (req, res) => {
     const { phone, trxId, amount } = req.body;
     const user = users[phone];
 
     if (!user) return res.json({ message: "User not found! Please login." });
 
-    // সার্ভারে থাকা SMS লগের সাথে TrxID ও Amount মেলানো
+    const cleanInputTrx = trxId.trim().toLowerCase();
+
     const matchIndex = receivedSMSLogs.findIndex(log => 
-        log.trxId.trim().toLowerCase() === trxId.trim().toLowerCase() && 
+        log.trxId.trim().toLowerCase() === cleanInputTrx && 
         parseFloat(log.amount) === parseFloat(amount)
     );
 
     if (matchIndex !== -1) {
         user.balance += parseFloat(amount);
-        // একবার ব্যবহার করা TrxID মুছে দেওয়া যেন দ্বিতীয়বার কেউ ব্যবহার করতে না পারে
         receivedSMSLogs.splice(matchIndex, 1);
         res.json({ message: "Deposit Verified! Balance Added Successfully." });
     } else {
@@ -54,15 +55,32 @@ app.post('/api/deposit', (req, res) => {
     }
 });
 
-// SMS Webhook (আপনার মোবাইলের SMS App থেকে মেসেজ রিসিভ করার জন্য)
+// SMS Webhook (Parses both bKash TrxID & Nagad TxnID)
 app.post('/api/sms-webhook', (req, res) => {
-    const { trxId, amount } = req.body;
-    if(trxId && amount) {
-        receivedSMSLogs.push({ trxId: trxId.trim(), amount: parseFloat(amount) });
-        console.log(`New SMS Received -> TrxID: ${trxId}, Amount: ${amount}`);
-        return res.json({ status: "Success", message: "SMS Logged" });
+    const body = req.body || {};
+    const smsText = body.text || body.message || body.SMS || JSON.stringify(body);
+
+    console.log("Incoming Raw SMS:", smsText);
+
+    // Regex for both bKash (TrxID) and Nagad (TxnID)
+    const trxMatch = smsText.match(/TrxID\s+([A-Za-z0-9]+)/i) || smsText.match(/TxnID:\s*([A-Za-z0-9]+)/i) || smsText.match(/TxnID\s+([A-Za-z0-9]+)/i);
+    const amountMatch = smsText.match(/Tk\s*([\d\.]+)/i) || smsText.match(/BDT\s*([\d\.]+)/i) || smsText.match(/Amount:\s*Tk\s*([\d\.]+)/i);
+
+    if (trxMatch && amountMatch) {
+        const extractedTrx = trxMatch[1].trim();
+        const extractedAmount = parseFloat(amountMatch[1]);
+
+        receivedSMSLogs.push({ trxId: extractedTrx, amount: extractedAmount });
+        console.log(`Parsed Success -> ID: ${extractedTrx}, Amount: ${extractedAmount}`);
+        return res.json({ status: "Success", trxId: extractedTrx, amount: extractedAmount });
     }
-    res.json({ status: "Failed", message: "Invalid data format" });
+
+    if (body.trxId && body.amount) {
+        receivedSMSLogs.push({ trxId: body.trxId.trim(), amount: parseFloat(body.amount) });
+        return res.json({ status: "Success Direct" });
+    }
+
+    res.json({ status: "Received but could not parse TrxID/Amount" });
 });
 
 const PORT = process.env.PORT || 3000;
