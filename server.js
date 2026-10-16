@@ -84,13 +84,25 @@ app.post('/api/admin/update-config', (req, res) => {
                 systemConfig.methods[key].numbers.forEach(n => { existingMap[n.num] = n.collected; });
             }
             
-            methods[key].numbers = incoming.numbers.map(nObj => {
-                const numVal = typeof nObj === 'string' ? nObj : nObj.num;
-                return {
-                    num: numVal,
-                    collected: existingMap[numVal] !== undefined ? existingMap[numVal] : 0
-                };
-            });
+            // Fix: properly parse numbers whether separated by comma or newline
+            let rawVal = incoming.numbers;
+            let numList = [];
+            if (Array.isArray(rawVal)) {
+                rawVal.forEach(item => {
+                    let text = typeof item === 'string' ? item : item.num;
+                    if(text) {
+                        let splitArr = text.split(/[\n,]+/);
+                        splitArr.forEach(s => { if(s.trim()) numList.push(s.trim()); });
+                    }
+                });
+            } else if (typeof rawVal === 'string') {
+                numList = rawVal.split(/[\n,]+/).map(n => n.trim()).filter(n => n !== "");
+            }
+
+            methods[key].numbers = numList.map(numVal => ({
+                num: numVal,
+                collected: existingMap[numVal] !== undefined ? existingMap[numVal] : 0
+            }));
         }
         systemConfig.methods = methods;
     }
@@ -113,7 +125,6 @@ app.get('/api/balance', (req, res) => {
     res.json({ balance: user ? user.balance : 0 });
 });
 
-// Track deposit precisely to the active number currently receiving it
 app.post('/api/deposit', (req, res) => {
     const { phone, trxId, amount, methodKey } = req.body;
     const user = users[phone];
