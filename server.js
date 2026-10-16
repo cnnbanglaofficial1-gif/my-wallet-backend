@@ -14,10 +14,9 @@ app.use(express.urlencoded({ extended: true }));
 let users = {}; 
 let verifiedTransactions = []; 
 
-// System Config with strict tracking
 let systemConfig = {
     adminPassword: "adminsecretpass",
-    rotationMinutes: 1, // 1 Minute rotation
+    rotationMinutes: 1, // 1 minute rotation
     methods: {
         bkash_send: { name: "bKash Send Money", enabled: true, limit: 20000, numbers: [{num: "01602319623", collected: 0}], type: "number" },
         nagad_send: { name: "Nagad Send Money", enabled: true, limit: 20000, numbers: [{num: "01601884100", collected: 0}], type: "number" },
@@ -38,7 +37,6 @@ function getActiveAccount(methodKey) {
         return null;
     }
 
-    // Filter only numbers that haven't reached their limit yet
     const validNumbers = method.numbers.filter(item => item.collected < method.limit);
     if (validNumbers.length === 0) return null; 
 
@@ -115,7 +113,6 @@ app.get('/api/balance', (req, res) => {
     res.json({ balance: user ? user.balance : 0 });
 });
 
-// Deposit Verification & Track Collected Amount on Currently Active Number
 app.post('/api/deposit', (req, res) => {
     const { phone, trxId, amount, methodKey } = req.body;
     const user = users[phone];
