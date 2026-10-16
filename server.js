@@ -14,51 +14,57 @@ app.use(express.urlencoded({ extended: true }));
 let users = {}; 
 let verifiedTransactions = []; 
 
-// Admin Credentials & Payment Methods Configuration
+// System Config with per-number tracking data structure
 let systemConfig = {
-    adminPassword: "adminsecretpass", // Admin Panel Security Password
-    rotationMinutes: 10,              // Dynamic Number Rotation Time (in Minutes)
+    adminPassword: "adminsecretpass",
+    rotationMinutes: 10,
     methods: {
-        bkash_send: { name: "bKash Send Money", enabled: true, numbers: ["01602319623"], type: "number" },
-        nagad_send: { name: "Nagad Send Money", enabled: true, numbers: ["01601884100"], type: "number" },
-        rocket: { name: "Rocket", enabled: false, numbers: [], type: "number" },
-        usdt: { name: "USDT (TRC20)", enabled: false, numbers: [], type: "address" },
-        bkash_cashout: { name: "bKash Cashout", enabled: false, numbers: [], type: "number" },
-        nagad_cashout: { name: "Nagad Cashout", enabled: false, numbers: [], type: "number" },
-        bkash_merchant: { name: "bKash Merchant", enabled: false, numbers: [], type: "number" },
-        nagad_merchant: { name: "Nagad Merchant", enabled: false, numbers: [], type: "number" },
-        bank: { name: "Bank Transfer", enabled: false, numbers: [], type: "details" }
+        bkash_send: { name: "bKash Send Money", enabled: true, limit: 20000, numbers: [{num: "01602319623", collected: 0}], type: "number" },
+        nagad_send: { name: "Nagad Send Money", enabled: true, limit: 20000, numbers: [{num: "01601884100", collected: 0}], type: "number" },
+        rocket: { name: "Rocket", enabled: false, limit: 20000, numbers: [], type: "number" },
+        usdt: { name: "USDT (TRC20)", enabled: false, limit: 1000, numbers: [], type: "address" },
+        bkash_cashout: { name: "bKash Cashout", enabled: false, limit: 20000, numbers: [], type: "number" },
+        nagad_cashout: { name: "Nagad Cashout", enabled: false, limit: 20000, numbers: [], type: "number" },
+        bkash_merchant: { name: "bKash Merchant", enabled: false, limit: 50000, numbers: [], type: "number" },
+        nagad_merchant: { name: "Nagad Merchant", enabled: false, limit: 50000, numbers: [], type: "number" },
+        bank: { name: "Bank Transfer", enabled: false, limit: 100000, numbers: [], type: "details" }
     }
 };
 
-// 10 Min Loop Math Logic: Dynamic active number fetch
+// Get only active numbers whose collected amount < limit
 function getActiveAccount(methodKey) {
     const method = systemConfig.methods[methodKey];
     if (!method || !method.enabled || !method.numbers || method.numbers.length === 0) {
         return null;
     }
+
+    // Filter out numbers that reached their limits
+    const validNumbers = method.numbers.filter(item => item.collected < method.limit);
+    if (validNumbers.length === 0) return null; // All numbers filled!
+
     const intervalMs = systemConfig.rotationMinutes * 60 * 1000;
-    const currentIndex = Math.floor(Date.now() / intervalMs) % method.numbers.length;
-    return method.numbers[currentIndex];
+    const currentIndex = Math.floor(Date.now() / intervalMs) % validNumbers.length;
+    return validNumbers[currentIndex].num;
 }
 
-// Public API for Active Methods and Auto-Rotating Numbers
 app.get('/api/active-methods', (req, res) => {
     let activeList = {};
     for (let key in systemConfig.methods) {
         const item = systemConfig.methods[key];
         if (item.enabled) {
-            activeList[key] = {
-                name: item.name,
-                activeAccount: getActiveAccount(key),
-                type: item.type
-            };
+            const activeAcc = getActiveAccount(key);
+            if (activeAcc) {
+                activeList[key] = {
+                    name: item.name,
+                    activeAccount: activeAcc,
+                    type: item.type
+                };
+            }
         }
     }
     res.json(activeList);
 });
 
-// Admin Login Check
 app.post('/api/admin/login', (req, res) => {
     const { password } = req.body;
     if (password === systemConfig.adminPassword) {
@@ -67,19 +73,35 @@ app.post('/api/admin/login', (req, res) => {
     res.json({ success: false, message: "Invalid Admin Password!" });
 });
 
-// Admin Update Config API
 app.post('/api/admin/update-config', (req, res) => {
     const { password, methods, rotationMinutes } = req.body;
     if (password !== systemConfig.adminPassword) {
         return res.json({ success: false, message: "Unauthorized!" });
     }
-    if (methods) systemConfig.methods = methods;
+    if (methods) {
+        // Format numbers input properly maintaining collected amount tracking
+        for(let key in methods) {
+            let incoming = methods[key];
+            let existingMap = {};
+            if(systemConfig.methods[key]) {
+                systemConfig.methods[key].numbers.forEach(n => { existingMap[n.num] = n.collected; });
+            }
+            
+            methods[key].numbers = incoming.numbers.map(nObj => {
+                const numVal = typeof nObj === 'string' ? nObj : nObj.num;
+                return {
+                    num: numVal,
+                    collected: existingMap[numVal] !== undefined ? existingMap[numVal] : 0
+                };
+            });
+        }
+        systemConfig.methods = methods;
+    }
     if (rotationMinutes) systemConfig.rotationMinutes = parseInt(rotationMinutes) || 10;
     
     res.json({ success: true, message: "System configuration updated successfully!", systemConfig });
 });
 
-// User Auth & Balance
 app.post('/api/register', (req, res) => {
     const { phone, pass } = req.body;
     if (!phone || !pass) return res.json({ message: "Mobile and password required!" });
@@ -94,9 +116,9 @@ app.get('/api/balance', (req, res) => {
     res.json({ balance: user ? user.balance : 0 });
 });
 
-// Deposit Verification
+// Deposit Verification & Updating specific account limit tracker
 app.post('/api/deposit', (req, res) => {
-    const { phone, trxId, amount } = req.body;
+    const { phone, trxId, amount, methodKey } = req.body;
     const user = users[phone];
 
     if (!user) return res.json({ message: "User not found! Please login." });
@@ -107,15 +129,25 @@ app.post('/api/deposit', (req, res) => {
     );
 
     if (index !== -1) {
-        user.balance += parseFloat(amount);
+        const depositAmount = parseFloat(amount);
+        user.balance += depositAmount;
         verifiedTransactions[index].used = true;
+
+        // Add collected amount to the exact active account that received this payment
+        if (methodKey && systemConfig.methods[methodKey]) {
+            const activeAccNum = getActiveAccount(methodKey);
+            const targetNumObj = systemConfig.methods[methodKey].numbers.find(n => n.num === activeAccNum);
+            if (targetNumObj) {
+                targetNumObj.collected += depositAmount;
+            }
+        }
+
         return res.json({ message: "Deposit Successful! Balance Added." });
     } else {
         return res.json({ message: "Error: Invalid TrxID, Amount mismatch, or already used!" });
     }
 });
 
-// SMS Webhook Parser
 app.post('/api/sms-webhook', (req, res) => {
     const body = req.body || {};
     const smsText = body.text || body.message || body.SMS || JSON.stringify(body);
