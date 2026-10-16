@@ -35,11 +35,33 @@ let config = {
             ],
             currentIndex: 0,
             lastRotated: Date.now()
+        },
+        rocket: {
+            name: "Rocket Personal",
+            icon: "rocket",
+            enabled: true,
+            limit: 20000,
+            numbers: [
+                { num: "01900000001", collected: 0 }
+            ],
+            currentIndex: 0,
+            lastRotated: Date.now()
+        },
+        upay: {
+            name: "Upay Personal",
+            icon: "upay",
+            enabled: true,
+            limit: 20000,
+            numbers: [
+                { num: "01300000001", collected: 0 }
+            ],
+            currentIndex: 0,
+            lastRotated: Date.now()
         }
     }
 };
 
-const ADMIN_PASSWORD = "admin";
+const ADMIN_PASSWORD = "adminsecretpass";
 
 // Helper: Get Active Number with Auto-Rotation
 function getActiveNumber(methodKey) {
@@ -74,12 +96,12 @@ app.post('/api/register', (req, res) => {
     const { phone, pass } = req.body;
     if (!users[phone]) {
         users[phone] = { pass, balance: 0, wallets: {} };
-        return res.json({ success: true, message: "রেজিস্ট্রেশন সফল হয়েছে!" });
+        return res.json({ success: true, message: "Registration safol hoyeche!" });
     }
     if (users[phone].pass === pass) {
-        return res.json({ success: true, message: "লগইন সফল হয়েছে!" });
+        return res.json({ success: true, message: "Login safol hoyeche!" });
     }
-    return res.status(400).json({ success: false, message: "ভুল পাসওয়ার্ড!" });
+    return res.status(400).json({ success: false, message: "Bhul password!" });
 });
 
 app.get('/api/balance', (req, res) => {
@@ -106,10 +128,10 @@ app.get('/api/active-methods', (req, res) => {
 
 app.post('/api/deposit', (req, res) => {
     const { phone, trxId, amount, methodKey } = req.body;
-    if (!users[phone]) return res.status(400).json({ success: false, message: "ইউজার পাওয়া যায়নি" });
+    if (!users[phone]) return res.status(400).json({ success: false, message: "User pawa jayni" });
 
     const num = getActiveNumber(methodKey);
-    if (!num) return res.status(400).json({ success: false, message: "পেমেন্ট মেথডটি বর্তমানে বন্ধ রয়েছে" });
+    if (!num) return res.status(400).json({ success: false, message: "Payment method ti bortomane bondho ache" });
 
     users[phone].balance += parseFloat(amount);
 
@@ -126,7 +148,7 @@ app.post('/api/deposit', (req, res) => {
         date: new Date().toLocaleTimeString()
     });
 
-    res.json({ success: true, message: "ডিপোজিট সফলভাবে জমা হয়েছে!" });
+    res.json({ success: true, message: "Deposit safolvabe joma hoyeche!" });
 });
 
 app.get('/api/deposit-history', (req, res) => {
@@ -138,7 +160,7 @@ app.get('/api/deposit-history', (req, res) => {
 // Multi-Wallet Binding
 app.post('/api/bind-wallet', (req, res) => {
     const { phone, category, accountNumber, pin } = req.body;
-    if (!users[phone]) return res.status(400).json({ success: false, message: "ইউজার পাওয়া যায়নি" });
+    if (!users[phone]) return res.status(400).json({ success: false, message: "User pawa jayni" });
 
     if (!users[phone].wallets) users[phone].wallets = {};
 
@@ -147,7 +169,7 @@ app.post('/api/bind-wallet', (req, res) => {
         pin: pin
     };
 
-    res.json({ success: true, message: `${category} ওয়ালেট বাইন্ড ও পিন সেভ হয়েছে!` });
+    res.json({ success: true, message: `${category} wallet bind o pin save hoyeche!` });
 });
 
 app.get('/api/get-wallets', (req, res) => {
@@ -160,15 +182,15 @@ app.get('/api/get-wallets', (req, res) => {
 
 app.post('/api/withdraw', (req, res) => {
     const { phone, category, amount, pin } = req.body;
-    if (!users[phone]) return res.status(400).json({ success: false, message: "ইউজার পাওয়া যায়নি" });
+    if (!users[phone]) return res.status(400).json({ success: false, message: "User pawa jayni" });
 
     const userWallet = users[phone].wallets ? users[phone].wallets[category] : null;
-    if (!userWallet) return res.status(400).json({ success: false, message: `আপনার ${category} ওয়ালেট বাইন্ড করা নেই!` });
+    if (!userWallet) return res.status(400).json({ success: false, message: `Apnar ${category} wallet bind kora nei!` });
 
-    if (userWallet.pin !== pin) return res.status(400).json({ success: false, message: "ভুল সিক্রেট পিন!" });
+    if (userWallet.pin !== pin) return res.status(400).json({ success: false, message: "Bhul secret pin!" });
 
     const reqAmt = parseFloat(amount);
-    if (users[phone].balance < reqAmt) return res.status(400).json({ success: false, message: "पर्याप्त ব্যালেন্স নেই!" });
+    if (users[phone].balance < reqAmt) return res.status(400).json({ success: false, message: "Poryapto balance nei!" });
 
     users[phone].balance -= reqAmt;
 
@@ -183,7 +205,7 @@ app.post('/api/withdraw', (req, res) => {
     };
 
     withdrawRequests.unshift(reqObj);
-    res.json({ success: true, message: "উইথড্র রিকোয়েস্ট পাঠানো হয়েছে!" });
+    res.json({ success: true, message: "Withdraw request pathano hoyeche!" });
 });
 
 app.get('/api/user-withdraws', (req, res) => {
@@ -198,7 +220,7 @@ app.post('/api/admin/login', (req, res) => {
     if (password === ADMIN_PASSWORD) {
         return res.json({ success: true, config, withdrawRequests });
     }
-    res.status(400).json({ success: false, message: "ভুল পাসওয়ার্ড!" });
+    res.status(400).json({ success: false, message: "Bhul password!" });
 });
 
 app.post('/api/admin/approve-withdraw', (req, res) => {
@@ -220,7 +242,7 @@ app.post('/api/admin/update-config', (req, res) => {
     if (methods) config.methods = methods;
     if (rotationMinutes) config.rotationMinutes = parseFloat(rotationMinutes);
 
-    res.json({ success: true, message: "কনফিগারেশন সেভ করা হয়েছে!" });
+    res.json({ success: true, message: "Configuration save kora hoyeche!" });
 });
 
 const PORT = process.env.PORT || 5000;
