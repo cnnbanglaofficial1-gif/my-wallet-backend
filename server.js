@@ -1,233 +1,227 @@
 const express = require('express');
 const cors = require('cors');
+
 const app = express();
-
-app.use(cors({ origin: '*', methods: ['GET', 'POST'], allowedHeaders: ['Content-Type'] }));
+app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-let users = {}; 
-let verifiedTransactions = []; 
-let depositHistory = {}; 
-let withdrawRequests = []; 
-let userBoundWallets = {}; 
+// In-Memory Database Storage
+let users = {};
+let depositHistory = [];
+let withdrawRequests = [];
 
-let systemConfig = {
-    adminPassword: "adminsecretpass",
-    rotationMinutes: 1, 
+let config = {
+    rotationMinutes: 1,
     methods: {
-        bkash_send: { name: "Send Money Bkash", enabled: true, limit: 20000, numbers: [{num: "01602319623", collected: 0}], type: "number", icon: "bkash" },
-        nagad_send: { name: "Send Money Nagad", enabled: true, limit: 20000, numbers: [{num: "01601884100", collected: 0}], type: "number", icon: "nagad" },
-        bkash_personal: { name: "Bkash Personal", enabled: true, limit: 20000, numbers: [], type: "number", icon: "bkash" },
-        nagad_personal: { name: "Nagad Personal", enabled: true, limit: 20000, numbers: [], type: "number", icon: "nagad" },
-        nagad_cashout: { name: "NAGAD Cashout", enabled: true, limit: 20000, numbers: [], type: "number", icon: "nagad" },
-        bkash_cashout: { name: "Bkash Cashout", enabled: true, limit: 20000, numbers: [], type: "number", icon: "bkash" },
-        rocket: { name: "ROCKET", enabled: true, limit: 20000, numbers: [], type: "number", icon: "rocket" },
-        usdt: { name: "USDT", enabled: true, limit: 1000, numbers: [], type: "address", icon: "usdt" }
+        bkash: {
+            name: "bKash Personal",
+            icon: "bkash",
+            enabled: true,
+            limit: 20000,
+            numbers: [
+                { num: "01700000001", collected: 0 },
+                { num: "01700000002", collected: 0 }
+            ],
+            currentIndex: 0,
+            lastRotated: Date.now()
+        },
+        nagad: {
+            name: "Nagad Personal",
+            icon: "nagad",
+            enabled: true,
+            limit: 20000,
+            numbers: [
+                { num: "01800000001", collected: 0 }
+            ],
+            currentIndex: 0,
+            lastRotated: Date.now()
+        }
     }
 };
 
-function getActiveAccount(methodKey) {
-    const method = systemConfig.methods[methodKey];
+const ADMIN_PASSWORD = "admin";
+
+// Helper: Get Active Number with Auto-Rotation
+function getActiveNumber(methodKey) {
+    const method = config.methods[methodKey];
     if (!method || !method.enabled || !method.numbers || method.numbers.length === 0) return null;
-    const validNumbers = method.numbers.filter(item => item.collected < method.limit);
-    if (validNumbers.length === 0) return null; 
-    const intervalMs = (systemConfig.rotationMinutes || 1) * 60 * 1000;
-    const currentIndex = Math.floor(Date.now() / intervalMs) % validNumbers.length;
-    return validNumbers[currentIndex].num;
+
+    const rotationIntervalMs = (config.rotationMinutes || 1) * 60 * 1000;
+    if (Date.now() - method.lastRotated >= rotationIntervalMs) {
+        method.currentIndex = (method.currentIndex + 1) % method.numbers.length;
+        method.lastRotated = Date.now();
+    }
+
+    let active = method.numbers[method.currentIndex];
+    if (active.collected >= method.limit) {
+        let found = false;
+        for (let i = 0; i < method.numbers.length; i++) {
+            let nextIndex = (method.currentIndex + i) % method.numbers.length;
+            if (method.numbers[nextIndex].collected < method.limit) {
+                method.currentIndex = nextIndex;
+                active = method.numbers[nextIndex];
+                found = true;
+                break;
+            }
+        }
+        if (!found) return null;
+    }
+    return active.num;
 }
 
-app.get('/api/active-methods', (req, res) => {
-    let activeList = {};
-    for (let key in systemConfig.methods) {
-        const item = systemConfig.methods[key];
-        if (item.enabled) {
-            const activeAcc = getActiveAccount(key);
-            activeList[key] = { name: item.name, activeAccount: activeAcc, type: item.type, icon: item.icon };
-        }
-    }
-    res.json(activeList);
-});
-
-app.post('/api/admin/login', (req, res) => {
-    const { password } = req.body;
-    if (password === systemConfig.adminPassword) return res.json({ success: true, config: systemConfig, withdrawRequests });
-    res.json({ success: false, message: "Invalid Admin Password!" });
-});
-
-app.post('/api/admin/update-config', (req, res) => {
-    const { password, methods, rotationMinutes } = req.body;
-    if (password !== systemConfig.adminPassword) return res.json({ success: false, message: "Unauthorized!" });
-    if (methods) {
-        for(let key in methods) {
-            let incoming = methods[key];
-            let existingMap = {};
-            if(systemConfig.methods[key]) {
-                systemConfig.methods[key].numbers.forEach(n => { existingMap[n.num] = n.collected; });
-            }
-            let rawVal = incoming.numbers;
-            let numList = [];
-            if (Array.isArray(rawVal)) {
-                rawVal.forEach(item => {
-                    let text = typeof item === 'string' ? item : item.num;
-                    if(text) text.split(/[\n,]+/).forEach(s => { if(s.trim()) numList.push(s.trim()); });
-                });
-            } else if (typeof rawVal === 'string') {
-                numList = rawVal.split(/[\n,]+/).map(n => n.trim()).filter(n => n !== "");
-            }
-            methods[key].numbers = numList.map(numVal => ({ num: numVal, collected: existingMap[numVal] !== undefined ? existingMap[numVal] : 0 }));
-            if(systemConfig.methods[key]) methods[key].icon = systemConfig.methods[key].icon;
-        }
-        systemConfig.methods = methods;
-    }
-    if (rotationMinutes) systemConfig.rotationMinutes = parseInt(rotationMinutes) || 1;
-    res.json({ success: true, message: "Config updated successfully!", systemConfig });
-});
-
-app.post('/api/admin/approve-withdraw', (req, res) => {
-    const { password, requestId } = req.body;
-    if (password !== systemConfig.adminPassword) return res.json({ success: false, message: "Unauthorized!" });
-    const reqItem = withdrawRequests.find(r => r.id === requestId);
-    if (reqItem) {
-        reqItem.status = "Approved (সফল)";
-        return res.json({ success: true, withdrawRequests });
-    }
-    res.json({ success: false, message: "Request not found!" });
-});
-
+// Routes
 app.post('/api/register', (req, res) => {
     const { phone, pass } = req.body;
-    if (!phone || !pass) return res.json({ message: "Mobile and password required!" });
-    if (users[phone]) return res.json({ message: "Login Successful!" });
-    users[phone] = { pass, balance: 1000 }; // Default 1000 BDT bonus for testing games
-    if (!depositHistory[phone]) depositHistory[phone] = [];
-    if (!userBoundWallets[phone]) userBoundWallets[phone] = {};
-    res.json({ message: "Registration Successful!" });
+    if (!users[phone]) {
+        users[phone] = { pass, balance: 0, wallets: {} };
+        return res.json({ success: true, message: "রেজিস্ট্রেশন সফল হয়েছে!" });
+    }
+    if (users[phone].pass === pass) {
+        return res.json({ success: true, message: "লগইন সফল হয়েছে!" });
+    }
+    return res.status(400).json({ success: false, message: "ভুল পাসওয়ার্ড!" });
 });
 
 app.get('/api/balance', (req, res) => {
     const { phone } = req.query;
-    const user = users[phone];
-    res.json({ balance: user ? user.balance : 0 });
-});
-
-// Sync Game Balance Effect
-app.post('/api/update-balance', (req, res) => {
-    const { phone, amountChange } = req.body;
-    const user = users[phone];
-    if(!user) return res.json({ success: false, message: "User not found!" });
-
-    user.balance += parseFloat(amountChange);
-    if(user.balance < 0) user.balance = 0;
-
-    res.json({ success: true, newBalance: user.balance });
-});
-
-app.post('/api/bind-wallet', (req, res) => {
-    const { phone, category, accountNumber, pin } = req.body;
-    if(!phone || !category || !accountNumber || !pin) return res.json({ success: false, message: "Sokol field puron korun!" });
-    if(!userBoundWallets[phone]) userBoundWallets[phone] = {};
-    
-    const existing = userBoundWallets[phone][category];
-    if (existing) {
-        if (existing.number !== accountNumber) return res.json({ success: false, message: `Account already bound!` });
-        existing.pin = pin;
-        return res.json({ success: true, message: `PIN updated successfully!` });
+    if (users[phone]) {
+        return res.json({ balance: users[phone].balance });
     }
-
-    userBoundWallets[phone][category] = { number: accountNumber, pin: pin, date: new Date().toISOString().substring(0, 10) };
-    res.json({ success: true, message: `Wallet bound successfully!` });
+    res.json({ balance: 0 });
 });
 
-app.get('/api/get-wallets', (req, res) => {
-    const { phone } = req.query;
-    res.json(userBoundWallets[phone] || {});
-});
-
-app.post('/api/withdraw', (req, res) => {
-    const { phone, category, amount, pin } = req.body;
-    const user = users[phone];
-    if(!user) return res.json({ success: false, message: "User not found!" });
-    
-    const userWallets = userBoundWallets[phone] || {};
-    const targetWallet = userWallets[category];
-    if(!targetWallet) return res.json({ success: false, message: `Prothome ${category} account bind korun!` });
-    if(targetWallet.pin !== pin.trim()) return res.json({ success: false, message: "Bhul PIN (Invalid PIN)!" });
-
-    const withdrawAmount = parseFloat(amount);
-    if(user.balance < withdrawAmount) return res.json({ success: false, message: "Aparjapto Balance!" });
-
-    user.balance -= withdrawAmount;
-    const formattedDate = new Date().toISOString().replace('T', ' ').substring(0, 19);
-
-    withdrawRequests.unshift({
-        id: 'WD-' + Math.floor(100000 + Math.random() * 900000),
-        phone: phone,
-        accountType: category,
-        accountNumber: targetWallet.number,
-        amount: withdrawAmount,
-        date: formattedDate,
-        status: "Pending (মঞ্জুর অপেক্ষায়)"
-    });
-    res.json({ success: true, message: "Withdraw Request submitted!" });
-});
-
-app.get('/api/user-withdraws', (req, res) => {
-    const { phone } = req.query;
-    res.json(withdrawRequests.filter(r => r.phone === phone));
+app.get('/api/active-methods', (req, res) => {
+    let result = {};
+    for (let key in config.methods) {
+        if (config.methods[key].enabled) {
+            result[key] = {
+                name: config.methods[key].name,
+                icon: config.methods[key].icon,
+                activeAccount: getActiveNumber(key)
+            };
+        }
+    }
+    res.json(result);
 });
 
 app.post('/api/deposit', (req, res) => {
     const { phone, trxId, amount, methodKey } = req.body;
-    const user = users[phone];
-    if (!user) return res.json({ message: "User not found!" });
-    if (!depositHistory[phone]) depositHistory[phone] = [];
+    if (!users[phone]) return res.status(400).json({ success: false, message: "ইউজার পাওয়া যায়নি" });
 
-    const cleanTrx = trxId.trim().toUpperCase();
-    const index = verifiedTransactions.findIndex(t => t.trxId.toUpperCase() === cleanTrx && parseFloat(t.amount) === parseFloat(amount) && !t.used);
-    const formattedDate = new Date().toISOString().replace('T', ' ').substring(0, 19);
-    const methodName = systemConfig.methods[methodKey] ? systemConfig.methods[methodKey].name : "Deposit";
+    const num = getActiveNumber(methodKey);
+    if (!num) return res.status(400).json({ success: false, message: "পেমেন্ট মেথডটি বর্তমানে বন্ধ রয়েছে" });
 
-    if (index !== -1) {
-        const depositAmount = parseFloat(amount);
-        user.balance += depositAmount;
-        verifiedTransactions[index].used = true;
+    users[phone].balance += parseFloat(amount);
 
-        if (methodKey && systemConfig.methods[methodKey]) {
-            const activeAccNum = getActiveAccount(methodKey);
-            const targetNumObj = systemConfig.methods[methodKey].numbers.find(n => n.num === activeAccNum);
-            if (targetNumObj) targetNumObj.collected += depositAmount;
-        }
+    const method = config.methods[methodKey];
+    const targetObj = method.numbers.find(n => n.num === num);
+    if (targetObj) targetObj.collected += parseFloat(amount);
 
-        depositHistory[phone].unshift({ method: methodName, trxId: cleanTrx, amount: depositAmount, date: formattedDate, status: "অনুমোদিত (Approved)" });
-        return res.json({ message: "Deposit Successful!" });
-    } else {
-        depositHistory[phone].unshift({ method: methodName, trxId: cleanTrx, amount: parseFloat(amount), date: formattedDate, status: "ব্যর্থ / ভুল (Invalid TrxID)" });
-        return res.json({ message: "Error: Invalid TrxID!" });
-    }
+    depositHistory.unshift({
+        phone,
+        trxId,
+        amount,
+        method: method.name,
+        status: "Approved (Auto)",
+        date: new Date().toLocaleTimeString()
+    });
+
+    res.json({ success: true, message: "ডিপোজিট সফলভাবে জমা হয়েছে!" });
 });
 
 app.get('/api/deposit-history', (req, res) => {
     const { phone } = req.query;
-    res.json(depositHistory[phone] || []);
+    const history = depositHistory.filter(item => item.phone === phone);
+    res.json(history);
 });
 
-app.post('/api/sms-webhook', (req, res) => {
-    const body = req.body || {};
-    const smsText = body.text || body.message || body.SMS || JSON.stringify(body);
-    const trxMatch = smsText.match(/TrxID\s+([A-Za-z0-9]+)/i) || smsText.match(/TxnID[:\s]*([A-Za-z0-9]+)/i);
-    const amountMatch = smsText.match(/Tk\s*([\d\.]+)/i) || smsText.match(/BDT\s*([\d\.]+)/i);
+// Multi-Wallet Binding
+app.post('/api/bind-wallet', (req, res) => {
+    const { phone, category, accountNumber, pin } = req.body;
+    if (!users[phone]) return res.status(400).json({ success: false, message: "ইউজার পাওয়া যায়নি" });
 
-    if (trxMatch && amountMatch) {
-        const trxId = trxMatch[1].trim();
-        const amount = parseFloat(amountMatch[1]);
-        if (!verifiedTransactions.find(t => t.trxId.toUpperCase() === trxId.toUpperCase())) {
-            verifiedTransactions.push({ trxId, amount, used: false });
-        }
-        return res.json({ status: "Success", trxId, amount });
+    if (!users[phone].wallets) users[phone].wallets = {};
+
+    users[phone].wallets[category] = {
+        number: accountNumber,
+        pin: pin
+    };
+
+    res.json({ success: true, message: `${category} ওয়ালেট বাইন্ড ও পিন সেভ হয়েছে!` });
+});
+
+app.get('/api/get-wallets', (req, res) => {
+    const { phone } = req.query;
+    if (users[phone] && users[phone].wallets) {
+        return res.json(users[phone].wallets);
     }
-    res.json({ status: "Failed" });
+    res.json({});
 });
 
-const PORT = process.env.PORT || 3000;
+app.post('/api/withdraw', (req, res) => {
+    const { phone, category, amount, pin } = req.body;
+    if (!users[phone]) return res.status(400).json({ success: false, message: "ইউজার পাওয়া যায়নি" });
+
+    const userWallet = users[phone].wallets ? users[phone].wallets[category] : null;
+    if (!userWallet) return res.status(400).json({ success: false, message: `আপনার ${category} ওয়ালেট বাইন্ড করা নেই!` });
+
+    if (userWallet.pin !== pin) return res.status(400).json({ success: false, message: "ভুল সিক্রেট পিন!" });
+
+    const reqAmt = parseFloat(amount);
+    if (users[phone].balance < reqAmt) return res.status(400).json({ success: false, message: "पर्याप्त ব্যালেন্স নেই!" });
+
+    users[phone].balance -= reqAmt;
+
+    const reqObj = {
+        id: "WD_" + Date.now(),
+        phone,
+        accountType: category,
+        accountNumber: userWallet.number,
+        amount: reqAmt,
+        status: "Pending",
+        date: new Date().toLocaleTimeString()
+    };
+
+    withdrawRequests.unshift(reqObj);
+    res.json({ success: true, message: "উইথড্র রিকোয়েস্ট পাঠানো হয়েছে!" });
+});
+
+app.get('/api/user-withdraws', (req, res) => {
+    const { phone } = req.query;
+    const list = withdrawRequests.filter(r => r.phone === phone);
+    res.json(list);
+});
+
+// Admin Panel APIs
+app.post('/api/admin/login', (req, res) => {
+    const { password } = req.body;
+    if (password === ADMIN_PASSWORD) {
+        return res.json({ success: true, config, withdrawRequests });
+    }
+    res.status(400).json({ success: false, message: "ভুল পাসওয়ার্ড!" });
+});
+
+app.post('/api/admin/approve-withdraw', (req, res) => {
+    const { password, requestId } = req.body;
+    if (password !== ADMIN_PASSWORD) return res.status(400).json({ success: false, message: "Unauthorized" });
+
+    const reqObj = withdrawRequests.find(w => w.id === requestId);
+    if (reqObj) {
+        reqObj.status = "Approved";
+        return res.json({ success: true, withdrawRequests });
+    }
+    res.status(404).json({ success: false, message: "Request not found" });
+});
+
+app.post('/api/admin/update-config', (req, res) => {
+    const { password, methods, rotationMinutes } = req.body;
+    if (password !== ADMIN_PASSWORD) return res.status(400).json({ success: false, message: "Unauthorized" });
+
+    if (methods) config.methods = methods;
+    if (rotationMinutes) config.rotationMinutes = parseFloat(rotationMinutes);
+
+    res.json({ success: true, message: "কনফিগারেশন সেভ করা হয়েছে!" });
+});
+
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
