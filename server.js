@@ -14,14 +14,72 @@ app.use(express.urlencoded({ extended: true }));
 let users = {}; 
 let verifiedTransactions = []; 
 
-// Default Wallet Numbers (Admin এগুলি পরিবর্তন করতে পারবে)
-let walletConfig = {
-    bkash: "01602319623",
-    nagad: "01601884100",
-    adminSecret: "mysecret123" // Admin panel security password/secret
+// Admin Credentials & Payment Methods Configuration
+let systemConfig = {
+    adminPassword: "adminsecretpass", // Admin Panel Security Password
+    rotationMinutes: 10,              // Dynamic Number Rotation Time (in Minutes)
+    methods: {
+        bkash_send: { name: "bKash Send Money", enabled: true, numbers: ["01602319623"], type: "number" },
+        nagad_send: { name: "Nagad Send Money", enabled: true, numbers: ["01601884100"], type: "number" },
+        rocket: { name: "Rocket", enabled: false, numbers: [], type: "number" },
+        usdt: { name: "USDT (TRC20)", enabled: false, numbers: [], type: "address" },
+        bkash_cashout: { name: "bKash Cashout", enabled: false, numbers: [], type: "number" },
+        nagad_cashout: { name: "Nagad Cashout", enabled: false, numbers: [], type: "number" },
+        bkash_merchant: { name: "bKash Merchant", enabled: false, numbers: [], type: "number" },
+        nagad_merchant: { name: "Nagad Merchant", enabled: false, numbers: [], type: "number" },
+        bank: { name: "Bank Transfer", enabled: false, numbers: [], type: "details" }
+    }
 };
 
-// User Register / Login
+// 10 Min Loop Math Logic: Dynamic active number fetch
+function getActiveAccount(methodKey) {
+    const method = systemConfig.methods[methodKey];
+    if (!method || !method.enabled || !method.numbers || method.numbers.length === 0) {
+        return null;
+    }
+    const intervalMs = systemConfig.rotationMinutes * 60 * 1000;
+    const currentIndex = Math.floor(Date.now() / intervalMs) % method.numbers.length;
+    return method.numbers[currentIndex];
+}
+
+// Public API for Active Methods and Auto-Rotating Numbers
+app.get('/api/active-methods', (req, res) => {
+    let activeList = {};
+    for (let key in systemConfig.methods) {
+        const item = systemConfig.methods[key];
+        if (item.enabled) {
+            activeList[key] = {
+                name: item.name,
+                activeAccount: getActiveAccount(key),
+                type: item.type
+            };
+        }
+    }
+    res.json(activeList);
+});
+
+// Admin Login Check
+app.post('/api/admin/login', (req, res) => {
+    const { password } = req.body;
+    if (password === systemConfig.adminPassword) {
+        return res.json({ success: true, config: systemConfig });
+    }
+    res.json({ success: false, message: "Invalid Admin Password!" });
+});
+
+// Admin Update Config API
+app.post('/api/admin/update-config', (req, res) => {
+    const { password, methods, rotationMinutes } = req.body;
+    if (password !== systemConfig.adminPassword) {
+        return res.json({ success: false, message: "Unauthorized!" });
+    }
+    if (methods) systemConfig.methods = methods;
+    if (rotationMinutes) systemConfig.rotationMinutes = parseInt(rotationMinutes) || 10;
+    
+    res.json({ success: true, message: "System configuration updated successfully!", systemConfig });
+});
+
+// User Auth & Balance
 app.post('/api/register', (req, res) => {
     const { phone, pass } = req.body;
     if (!phone || !pass) return res.json({ message: "Mobile and password required!" });
@@ -30,31 +88,10 @@ app.post('/api/register', (req, res) => {
     res.json({ message: "Registration Successful!" });
 });
 
-// Balance Check
 app.get('/api/balance', (req, res) => {
     const { phone } = req.query;
     const user = users[phone];
     res.json({ balance: user ? user.balance : 0 });
-});
-
-// Frontend-এর জন্য বর্তমান সচল নম্বরগুলো সরবরাহ করা
-app.get('/api/wallet-info', (req, res) => {
-    res.json({
-        bkash: walletConfig.bkash,
-        nagad: walletConfig.nagad
-    });
-});
-
-// Admin API: সিক্রেট পাসওয়ার্ড দিয়ে নতুন নম্বর সেট করার জন্য
-app.post('/api/admin/update-wallet', (req, res) => {
-    const { secret, bkash, nagad } = req.body;
-    if (secret !== walletConfig.adminSecret) {
-        return res.json({ success: false, message: "Unauthorized: Invalid Secret Key!" });
-    }
-    if (bkash) walletConfig.bkash = bkash.trim();
-    if (nagad) walletConfig.nagad = nagad.trim();
-    
-    res.json({ success: true, message: "Wallet numbers updated successfully!", walletConfig });
 });
 
 // Deposit Verification
@@ -101,4 +138,4 @@ app.post('/api/sms-webhook', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port `${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
