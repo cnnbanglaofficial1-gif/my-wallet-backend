@@ -10,20 +10,20 @@ let users = {};
 let verifiedTransactions = []; 
 let depositHistory = {}; 
 let withdrawRequests = []; 
-let userBoundWallets = {}; // Multiple bound wallets per user: { phone: [ {id, type, number, pin} ] }
+let userBoundWallets = {}; // Format: { phone: { bKash: {number, pin}, Nagad: {number, pin}, Rocket: {number, pin} } }
 
 let systemConfig = {
     adminPassword: "adminsecretpass",
     rotationMinutes: 1, 
     methods: {
-        bkash_send: { name: "Send Money Bkash", enabled: true, limit: 20000, numbers: [{num: "01602319623", collected: 0}], type: "number", icon: "Bkash" },
-        nagad_send: { name: "Send Money Nagad", enabled: true, limit: 20000, numbers: [{num: "01601884100", collected: 0}], type: "number", icon: "Nagad" },
-        bkash_personal: { name: "Bkash Personal", enabled: true, limit: 20000, numbers: [], type: "number", icon: "Bkash" },
-        nagad_personal: { name: "Nagad Personal", enabled: true, limit: 20000, numbers: [], type: "number", icon: "Nagad" },
-        nagad_cashout: { name: "NAGAD Cashout", enabled: true, limit: 20000, numbers: [], type: "number", icon: "Nagad" },
-        bkash_cashout: { name: "Bkash Cashout", enabled: true, limit: 20000, numbers: [], type: "number", icon: "Bkash" },
-        rocket: { name: "ROCKET", enabled: true, limit: 20000, numbers: [], type: "number", icon: "Rocket" },
-        usdt: { name: "USDT", enabled: true, limit: 1000, numbers: [], type: "address", icon: "USDT" }
+        bkash_send: { name: "Send Money Bkash", enabled: true, limit: 20000, numbers: [{num: "01602319623", collected: 0}], type: "number", icon: "bkash" },
+        nagad_send: { name: "Send Money Nagad", enabled: true, limit: 20000, numbers: [{num: "01601884100", collected: 0}], type: "number", icon: "nagad" },
+        bkash_personal: { name: "Bkash Personal", enabled: true, limit: 20000, numbers: [], type: "number", icon: "bkash" },
+        nagad_personal: { name: "Nagad Personal", enabled: true, limit: 20000, numbers: [], type: "number", icon: "nagad" },
+        nagad_cashout: { name: "NAGAD Cashout", enabled: true, limit: 20000, numbers: [], type: "number", icon: "nagad" },
+        bkash_cashout: { name: "Bkash Cashout", enabled: true, limit: 20000, numbers: [], type: "number", icon: "bkash" },
+        rocket: { name: "ROCKET", enabled: true, limit: 20000, numbers: [], type: "number", icon: "rocket" },
+        usdt: { name: "USDT", enabled: true, limit: 1000, numbers: [], type: "address", icon: "usdt" }
     }
 };
 
@@ -101,7 +101,7 @@ app.post('/api/register', (req, res) => {
     if (users[phone]) return res.json({ message: "Login Successful!" });
     users[phone] = { pass, balance: 0 };
     if (!depositHistory[phone]) depositHistory[phone] = [];
-    if (!userBoundWallets[phone]) userBoundWallets[phone] = [];
+    if (!userBoundWallets[phone]) userBoundWallets[phone] = {};
     res.json({ message: "Registration Successful!" });
 });
 
@@ -111,48 +111,61 @@ app.get('/api/balance', (req, res) => {
     res.json({ balance: user ? user.balance : 0 });
 });
 
-// Multiple Wallet Binding & PIN Reset
+// Single Account per category & PIN Reset System
 app.post('/api/bind-wallet', (req, res) => {
-    const { phone, accountType, accountNumber, pin } = req.body;
-    if(!phone || !accountNumber || !pin) return res.json({ success: false, message: "Sokol field puron korun!" });
+    const { phone, category, accountNumber, pin } = req.body;
+    if(!phone || !category || !accountNumber || !pin) return res.json({ success: false, message: "Sokol field puron korun!" });
     
-    if(!userBoundWallets[phone]) userBoundWallets[phone] = [];
+    if(!userBoundWallets[phone]) userBoundWallets[phone] = {};
     
-    // Check if already bound
-    const existing = userBoundWallets[phone].find(w => w.accountNumber === accountNumber);
-    if(existing) {
-        existing.pin = pin; // update pin if re-binding
-        existing.accountType = accountType;
-    } else {
-        userBoundWallets[phone].push({
-            id: 'W-' + Math.floor(1000 + Math.random() * 9000),
-            accountType,
-            accountNumber,
-            pin,
-            date: new Date().toISOString().substring(0, 10)
-        });
+    const existing = userBoundWallets[phone][category];
+    if (existing) {
+        if (existing.number !== accountNumber) {
+            return res.json({ success: false, message: `Apnar ${category} account sobshomoyer jonno (${existing.number}) bind kora ase! Number poriborton kora jabe na.` });
+        }
+        // Update / Reset PIN
+        existing.pin = pin;
+        return res.json({ success: true, message: `${category} PIN safollobhabe Reset/Update hoyeche!` });
     }
-    res.json({ success: true, message: "Wallet successfully bound/updated!" });
+
+    userBoundWallets[phone][category] = {
+        number: accountNumber,
+        pin: pin,
+        date: new Date().toISOString().substring(0, 10)
+    };
+    res.json({ success: true, message: `${category} account safollobhabe Bind hoyeche!` });
 });
 
 app.get('/api/get-wallets', (req, res) => {
     const { phone } = req.query;
-    res.json(userBoundWallets[phone] || []);
+    res.json(userBoundWallets[phone] || {});
 });
 
-// Withdraw Request
+// Strict Withdraw Request with mandatory PIN matching
 app.post('/api/withdraw', (req, res) => {
-    const { phone, walletId, amount, pin } = req.body;
+    const { phone, category, amount, pin } = req.body;
     const user = users[phone];
-    if(!user) return res.json({ success: false, message: "User not found!" });
+    if(!user) return res.json({ success: false, message: "User pawa jayni! Login korun." });
     
-    const wallets = userBoundWallets[phone] || [];
-    const targetWallet = wallets.find(w => w.id === walletId);
-    if(!targetWallet) return res.json({ success: false, message: "Wallet select korun!" });
-    if(targetManagerPinMatch = targetWallet.pin !== pin) return res.json({ success: false, message: "ভুল পিন (Invalid PIN)!" });
+    const userWallets = userBoundWallets[phone] || {};
+    const targetWallet = userWallets[category];
+
+    if(!targetWallet) {
+        return res.json({ success: false, message: `Prothome ${category} account bind korun!` });
+    }
+
+    if(targetWallet.pin !== pin.trim()) {
+        return res.json({ success: false, message: "Bhul PIN (Invalid PIN)! Sothik PIN din ba Reset korun." });
+    }
 
     const withdrawAmount = parseFloat(amount);
-    if(user.balance < withdrawAmount) return res.json({ success: false, message: "অপর্যাপ্ত ব্যালেন্স!" });
+    if(isNaN(withdrawAmount) || withdrawAmount <= 0) {
+        return res.json({ success: false, message: "Sothik pariman din!" });
+    }
+
+    if(user.balance < withdrawAmount) {
+        return res.json({ success: false, message: "Aparjapto Balance (Insufficient Balance)!" });
+    }
 
     user.balance -= withdrawAmount;
     const now = new Date();
@@ -161,14 +174,14 @@ app.post('/api/withdraw', (req, res) => {
     const newReq = {
         id: 'WD-' + Math.floor(100000 + Math.random() * 900000),
         phone: phone,
-        accountType: targetWallet.accountType,
-        accountNumber: targetWallet.accountNumber,
+        accountType: category,
+        accountNumber: targetWallet.number,
         amount: withdrawAmount,
         date: formattedDate,
         status: "Pending (মঞ্জুর অপেক্ষায়)"
     };
     withdrawRequests.unshift(newReq);
-    res.json({ success: true, message: "Withdraw request submitted!" });
+    res.json({ success: true, message: "Withdraw Request safollobhabe joma hoyeche!" });
 });
 
 app.get('/api/user-withdraws', (req, res) => {
