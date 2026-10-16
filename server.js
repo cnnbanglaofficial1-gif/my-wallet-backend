@@ -30,7 +30,7 @@ let systemConfig = {
     }
 };
 
-// 1 Minute Rotation Logic: returns strictly ONE active number whose collected < limit
+// Strict Single Active Number Rotation based on time interval
 function getActiveAccount(methodKey) {
     const method = systemConfig.methods[methodKey];
     if (!method || !method.enabled || !method.numbers || method.numbers.length === 0) {
@@ -113,6 +113,7 @@ app.get('/api/balance', (req, res) => {
     res.json({ balance: user ? user.balance : 0 });
 });
 
+// Track deposit precisely to the active number currently receiving it
 app.post('/api/deposit', (req, res) => {
     const { phone, trxId, amount, methodKey } = req.body;
     const user = users[phone];
