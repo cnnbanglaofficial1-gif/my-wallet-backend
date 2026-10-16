@@ -13,24 +13,24 @@ app.use(express.urlencoded({ extended: true }));
 
 let users = {}; 
 let verifiedTransactions = []; 
+let depositHistory = {}; // User Deposit History Tracker
 
 let systemConfig = {
     adminPassword: "adminsecretpass",
-    rotationMinutes: 1, // 1 minute rotation
+    rotationMinutes: 1, 
     methods: {
-        bkash_send: { name: "bKash Send Money", enabled: true, limit: 20000, numbers: [{num: "01602319623", collected: 0}], type: "number" },
-        nagad_send: { name: "Nagad Send Money", enabled: true, limit: 20000, numbers: [{num: "01601884100", collected: 0}], type: "number" },
-        rocket: { name: "Rocket", enabled: false, limit: 20000, numbers: [], type: "number" },
-        usdt: { name: "USDT (TRC20)", enabled: false, limit: 1000, numbers: [], type: "address" },
-        bkash_cashout: { name: "bKash Cashout", enabled: false, limit: 20000, numbers: [], type: "number" },
-        nagad_cashout: { name: "Nagad Cashout", enabled: false, limit: 20000, numbers: [], type: "number" },
-        bkash_merchant: { name: "bKash Merchant", enabled: false, limit: 50000, numbers: [], type: "number" },
-        nagad_merchant: { name: "Nagad Merchant", enabled: false, limit: 50000, numbers: [], type: "number" },
-        bank: { name: "Bank Transfer", enabled: false, limit: 100000, numbers: [], type: "details" }
+        bkash_send: { name: "Send Money Bkash", enabled: true, limit: 20000, numbers: [{num: "01602319623", collected: 0}], type: "number", icon: "https://i.ibb.co/L5B7n6X/bkash.png" },
+        nagad_send: { name: "Send Money Nagad", enabled: true, limit: 20000, numbers: [{num: "01601884100", collected: 0}], type: "number", icon: "https://i.ibb.co/3zd5spt/nagad.png" },
+        nagad_cashout: { name: "NAGAD Cashout", enabled: true, limit: 20000, numbers: [], type: "number", icon: "https://i.ibb.co/3zd5spt/nagad.png" },
+        bkash_cashout: { name: "Bkash Cashout", enabled: true, limit: 20000, numbers: [], type: "number", icon: "https://i.ibb.co/L5B7n6X/bkash.png" },
+        rocket: { name: "ROCKET", enabled: true, limit: 20000, numbers: [], type: "number", icon: "https://i.ibb.co/v4d2Hdt/rocket.png" },
+        usdt: { name: "USDT", enabled: true, limit: 1000, numbers: [], type: "address", icon: "https://i.ibb.co/0yLptnF/usdt.png" },
+        bkash_merchant: { name: "bKash Merchant", enabled: false, limit: 50000, numbers: [], type: "number", icon: "https://i.ibb.co/L5B7n6X/bkash.png" },
+        nagad_merchant: { name: "Nagad Merchant", enabled: false, limit: 50000, numbers: [], type: "number", icon: "https://i.ibb.co/3zd5spt/nagad.png" },
+        bank: { name: "Bank Transfer", enabled: false, limit: 100000, numbers: [], type: "details", icon: "https://i.ibb.co/MB27B5X/bank.png" }
     }
 };
 
-// Strict Single Active Number Rotation based on time interval
 function getActiveAccount(methodKey) {
     const method = systemConfig.methods[methodKey];
     if (!method || !method.enabled || !method.numbers || method.numbers.length === 0) {
@@ -51,13 +51,12 @@ app.get('/api/active-methods', (req, res) => {
         const item = systemConfig.methods[key];
         if (item.enabled) {
             const activeAcc = getActiveAccount(key);
-            if (activeAcc) {
-                activeList[key] = {
-                    name: item.name,
-                    activeAccount: activeAcc,
-                    type: item.type
-                };
-            }
+            activeList[key] = {
+                name: item.name,
+                activeAccount: activeAcc,
+                type: item.type,
+                icon: item.icon
+            };
         }
     }
     res.json(activeList);
@@ -84,7 +83,6 @@ app.post('/api/admin/update-config', (req, res) => {
                 systemConfig.methods[key].numbers.forEach(n => { existingMap[n.num] = n.collected; });
             }
             
-            // Fix: properly parse numbers whether separated by comma or newline
             let rawVal = incoming.numbers;
             let numList = [];
             if (Array.isArray(rawVal)) {
@@ -116,6 +114,7 @@ app.post('/api/register', (req, res) => {
     if (!phone || !pass) return res.json({ message: "Mobile and password required!" });
     if (users[phone]) return res.json({ message: "Login Successful!" });
     users[phone] = { pass, balance: 0 };
+    if (!depositHistory[phone]) depositHistory[phone] = [];
     res.json({ message: "Registration Successful!" });
 });
 
@@ -125,16 +124,23 @@ app.get('/api/balance', (req, res) => {
     res.json({ balance: user ? user.balance : 0 });
 });
 
+// Deposit Submission & Status Logging
 app.post('/api/deposit', (req, res) => {
     const { phone, trxId, amount, methodKey } = req.body;
     const user = users[phone];
 
     if (!user) return res.json({ message: "User not found! Please login." });
 
+    if (!depositHistory[phone]) depositHistory[phone] = [];
+
     const cleanTrx = trxId.trim().toUpperCase();
     const index = verifiedTransactions.findIndex(t => 
         t.trxId.toUpperCase() === cleanTrx && parseFloat(t.amount) === parseFloat(amount) && !t.used
     );
+
+    const now = new Date();
+    const formattedDate = now.toISOString().replace('T', ' ').substring(0, 19);
+    const methodName = systemConfig.methods[methodKey] ? systemConfig.methods[methodKey].name : "Deposit";
 
     if (index !== -1) {
         const depositAmount = parseFloat(amount);
@@ -149,10 +155,33 @@ app.post('/api/deposit', (req, res) => {
             }
         }
 
+        depositHistory[phone].unshift({
+            method: methodName,
+            trxId: cleanTrx,
+            amount: depositAmount,
+            date: formattedDate,
+            status: "অনুমোদিত (Approved)"
+        });
+
         return res.json({ message: "Deposit Successful! Balance Added." });
     } else {
+        depositHistory[phone].unshift({
+            method: methodName,
+            trxId: cleanTrx,
+            amount: parseFloat(amount),
+            date: formattedDate,
+            status: "ব্যর্থ / ভুল (Invalid TrxID)"
+        });
+
         return res.json({ message: "Error: Invalid TrxID, Amount mismatch, or already used!" });
     }
+});
+
+// Get User Deposit History
+app.get('/api/deposit-history', (req, res) => {
+    const { phone } = req.query;
+    const history = depositHistory[phone] || [];
+    res.json(history);
 });
 
 app.post('/api/sms-webhook', (req, res) => {
