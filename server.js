@@ -14,10 +14,10 @@ app.use(express.urlencoded({ extended: true }));
 let users = {}; 
 let verifiedTransactions = []; 
 
-// System Config with per-number tracking data structure
+// System Config with strict tracking
 let systemConfig = {
     adminPassword: "adminsecretpass",
-    rotationMinutes: 10,
+    rotationMinutes: 1, // 1 Minute rotation
     methods: {
         bkash_send: { name: "bKash Send Money", enabled: true, limit: 20000, numbers: [{num: "01602319623", collected: 0}], type: "number" },
         nagad_send: { name: "Nagad Send Money", enabled: true, limit: 20000, numbers: [{num: "01601884100", collected: 0}], type: "number" },
@@ -31,18 +31,18 @@ let systemConfig = {
     }
 };
 
-// Get only active numbers whose collected amount < limit
+// 1 Minute Rotation Logic: returns strictly ONE active number whose collected < limit
 function getActiveAccount(methodKey) {
     const method = systemConfig.methods[methodKey];
     if (!method || !method.enabled || !method.numbers || method.numbers.length === 0) {
         return null;
     }
 
-    // Filter out numbers that reached their limits
+    // Filter only numbers that haven't reached their limit yet
     const validNumbers = method.numbers.filter(item => item.collected < method.limit);
-    if (validNumbers.length === 0) return null; // All numbers filled!
+    if (validNumbers.length === 0) return null; 
 
-    const intervalMs = systemConfig.rotationMinutes * 60 * 1000;
+    const intervalMs = (systemConfig.rotationMinutes || 1) * 60 * 1000;
     const currentIndex = Math.floor(Date.now() / intervalMs) % validNumbers.length;
     return validNumbers[currentIndex].num;
 }
@@ -79,7 +79,6 @@ app.post('/api/admin/update-config', (req, res) => {
         return res.json({ success: false, message: "Unauthorized!" });
     }
     if (methods) {
-        // Format numbers input properly maintaining collected amount tracking
         for(let key in methods) {
             let incoming = methods[key];
             let existingMap = {};
@@ -97,7 +96,7 @@ app.post('/api/admin/update-config', (req, res) => {
         }
         systemConfig.methods = methods;
     }
-    if (rotationMinutes) systemConfig.rotationMinutes = parseInt(rotationMinutes) || 10;
+    if (rotationMinutes) systemConfig.rotationMinutes = parseInt(rotationMinutes) || 1;
     
     res.json({ success: true, message: "System configuration updated successfully!", systemConfig });
 });
@@ -116,7 +115,7 @@ app.get('/api/balance', (req, res) => {
     res.json({ balance: user ? user.balance : 0 });
 });
 
-// Deposit Verification & Updating specific account limit tracker
+// Deposit Verification & Track Collected Amount on Currently Active Number
 app.post('/api/deposit', (req, res) => {
     const { phone, trxId, amount, methodKey } = req.body;
     const user = users[phone];
@@ -133,7 +132,6 @@ app.post('/api/deposit', (req, res) => {
         user.balance += depositAmount;
         verifiedTransactions[index].used = true;
 
-        // Add collected amount to the exact active account that received this payment
         if (methodKey && systemConfig.methods[methodKey]) {
             const activeAccNum = getActiveAccount(methodKey);
             const targetNumObj = systemConfig.methods[methodKey].numbers.find(n => n.num === activeAccNum);
